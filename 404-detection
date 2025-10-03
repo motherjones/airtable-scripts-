@@ -1,0 +1,115 @@
+
+const TABLE_NAME = 'Stories - web';
+const VIEW_NAME = '"Slider" view'; // exact name
+const URL_FIELD_NAME = 'URL';
+const LIVE_FIELD_NAME = 'Live';
+const MAX_REDIRECTS = 5;
+
+
+const table = base.getTable(TABLE_NAME);
+const view = table.getView(VIEW_NAME);
+const urlField = table.getField(URL_FIELD_NAME);
+const liveField = table.getField(LIVE_FIELD_NAME);
+
+function liveValue(val) {
+  if (liveField.type === 'checkbox') return val;
+  if (liveField.type === 'singleSelect') return { name: val ? 'True' : 'False' };
+  return val ? 'True' : 'False';
+}
+
+// recursively loop redirects for final resolution
+async function fetchFinal(url) {
+  let currentUrl = url;
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    const res = await fetch(currentUrl, {
+      method: 'GET',
+      redirect: 'manual',         // don't auto-follow its not supported here
+      cache: 'no-store',
+    });
+      console.log(res.status);
+    // Normal terminal status (not a redirect)
+    if (![301, 302, 303, 307, 308].includes(res.status)) {
+      return { response: res, url: currentUrl, hops: i };
+    }
+
+    // Redirect response: get Location
+    const location = res.headers.get('Location') || res.headers.get('location');
+    if (!location) {
+      // Bad redirect with no Location — treat as failure
+      return { response: res, url: currentUrl, hops: i, brokenRedirect: true };
+    }
+
+    // Resolve relative redirect against current URL
+    try {
+      currentUrl = new URL(location, currentUrl).toString();
+    } catch (e) {
+      return { response: res, url: currentUrl, hops: i, brokenRedirect: true };
+    }
+
+    // Loop to follow next hop (manually)
+  }
+
+  // Too many redirects
+  return { response: null, url: url, hops: MAX_REDIRECTS + 1, tooManyRedirects: true };
+}
+
+const query = await view.selectRecordsAsync({ fields: [urlField, liveField] });
+const updates = [];
+
+for (const record of query.records) {
+  const url = record.getCellValue(urlField);
+  if (!url || typeof url !== 'string') {
+    console.log(`Skipping ${record.id} — no URL`);
+    continue;
+  }
+
+
+  try {
+    const { response, tooManyRedirects, brokenRedirect } = await fetchFinal(url);
+
+    let isLive = false;
+
+    if (response) {
+      // Your rule: live unless 404
+      isLive = response.status !== 404;
+    } else {
+      // If we couldn't get a final response (redirect loop, broken redirect), be conservative
+      isLive = false;
+    }
+
+    if (tooManyRedirects) {
+      console.log(`Too many redirects for ${url}`);
+    }
+    if (brokenRedirect) {
+      console.log(`Broken redirect for ${url}`);
+    }
+
+    updates.push({
+      id: record.id,
+      fields: { [liveField.name]: liveValue(isLive) },
+    });
+    console.log(url);
+    console.log(isLive);
+  
+  } catch (err) {
+    const msg = (err && (err.message || err.stack)) || JSON.stringify(err);
+    console.error(`Error fetching ${url}`);
+    // Conservative default on error: not live
+    updates.push({
+      id: record.id,
+      fields: { [liveField.name]: liveValue(false) },
+    });
+  }
+
+  // Flush in batches of 50
+  if (updates.length === 50) {
+    await table.updateRecordsAsync(updates.splice(0, 50));
+  }
+}
+
+if (updates.length) {
+  await table.updateRecordsAsync(updates);
+}
+
+
+console.log('Done.');
