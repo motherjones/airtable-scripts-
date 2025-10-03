@@ -2,8 +2,8 @@
 const TABLE_NAME = 'Stories - web';
 const VIEW_NAME = '"Slider" view'; // exact name
 const URL_FIELD_NAME = 'URL';
-const LIVE_FIELD_NAME = 'Live';
-const MAX_REDIRECTS = 5;
+const LIVE_FIELD_NAME = 'Publication status';
+const MAX_REDIRECTS = 2;
 
 
 const table = base.getTable(TABLE_NAME);
@@ -17,7 +17,7 @@ function liveValue(val) {
   return val ? 'True' : 'False';
 }
 
-// recursively loop redirects for final resolution
+// pseudo recursively loop redirects for final resolution
 async function fetchFinal(url) {
   let currentUrl = url;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
@@ -54,10 +54,12 @@ async function fetchFinal(url) {
 }
 
 const query = await view.selectRecordsAsync({ fields: [urlField, liveField] });
+console.log(query);
 const updates = [];
 
 for (const record of query.records) {
   const url = record.getCellValue(urlField);
+  console.log(record.getCellValue(liveField));
   if (!url || typeof url !== 'string') {
     console.log(`Skipping ${record.id} — no URL`);
     continue;
@@ -65,24 +67,19 @@ for (const record of query.records) {
 
 
   try {
-    const { response, tooManyRedirects, brokenRedirect } = await fetchFinal(url);
-
+    const { response } = await fetchFinal(url);
+    
     let isLive = false;
 
     if (response) {
-      // Your rule: live unless 404
+    
       isLive = response.status !== 404;
     } else {
       // If we couldn't get a final response (redirect loop, broken redirect), be conservative
       isLive = false;
     }
 
-    if (tooManyRedirects) {
-      console.log(`Too many redirects for ${url}`);
-    }
-    if (brokenRedirect) {
-      console.log(`Broken redirect for ${url}`);
-    }
+
 
     updates.push({
       id: record.id,
